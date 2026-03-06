@@ -304,19 +304,75 @@ if cross_menu != "選択しない":
         cross_machine_file = "cross_machine_stats.csv"
         if os.path.exists(cross_machine_file):
             cross_m_df = pd.read_csv(cross_machine_file)
-            cross_m_df.columns = ['店名', '機種名', '総導入台数', '平均差枚数', '勝率']
-            
-            machine_list = sorted(list(cross_m_df['機種名'].dropna().unique()))
-            default_m_idx = machine_list.index("スマスロ北斗の拳") if "スマスロ北斗の拳" in machine_list else 0
-            selected_machine = st.selectbox("分析したい機種を選択", machine_list, index=default_m_idx)
-            
+            cross_m_df.columns = ['店名', '機種名', '総導入台数', '稼働日数', '平均差枚数', '勝率', '集計数']
+
+            # 機種リストを総設置数（全店合計）が多い順にソート
+            machine_totals = cross_m_df.groupby('機種名')['総導入台数'].sum().sort_values(ascending=False)
+            machine_list = machine_totals.index.tolist()
+
+            # ── 検索窓 ──
+            search_q = st.text_input("🔍 機種名で検索", placeholder="例: 東京、北斗、ハナハナ", key="cross_machine_search")
+            if search_q:
+                matched = [m for m in machine_list if search_q in m]
+                if matched:
+                    st.caption("検索結果（クリックで選択）")
+                    btn_cols = st.columns(min(len(matched), 4))
+                    for i, m in enumerate(matched[:8]):
+                        if btn_cols[i % 4].button(m, key=f"cross_search_btn_{i}"):
+                            st.session_state["cross_machine_selectbox"] = m
+                            hist = st.session_state.get("cross_machine_history", [])
+                            if m not in hist:
+                                hist.insert(0, m)
+                            st.session_state["cross_machine_history"] = hist[:10]
+                            st.rerun()
+                else:
+                    st.caption("一致する機種が見つかりませんでした。")
+
+            # ── 最近の履歴タグ ──
+            hist = st.session_state.get("cross_machine_history", [])
+            if hist:
+                st.caption("最近の履歴")
+                h_cols = st.columns(min(len(hist), 5))
+                for i, m in enumerate(hist):
+                    if h_cols[i % 5].button(m, key=f"cross_hist_btn_{i}"):
+                        st.session_state["cross_machine_selectbox"] = m
+                        st.rerun()
+
+            # ── プルダウン（設置数が多い順） ──
+            def on_cross_machine_select():
+                m = st.session_state["cross_machine_selectbox"]
+                hist2 = st.session_state.get("cross_machine_history", [])
+                if m not in hist2:
+                    hist2.insert(0, m)
+                st.session_state["cross_machine_history"] = hist2[:10]
+
+            default_m = st.session_state.get("cross_machine_selectbox", "スマスロ北斗の拳")
+            if default_m not in machine_list:
+                default_m = machine_list[0]
+
+            selected_machine = st.selectbox(
+                "分析したい機種を選択（設置数が多い順）",
+                machine_list,
+                index=machine_list.index(default_m),
+                key="cross_machine_selectbox",
+                on_change=on_cross_machine_select,
+            )
+
             display_df = cross_m_df[cross_m_df['機種名'] == selected_machine].copy()
             display_df = display_df.sort_values("平均差枚数", ascending=False)
             display_df.drop("機種名", axis=1, inplace=True)
-            
-            display_df['勝率'] = (display_df['勝率'] * 100).round(1).astype(str) + "%"
+
+            # 勝率を「XX.X%(プラス台数/集計数)」形式に変換
+            plus_count = (display_df['勝率'] * display_df['集計数']).round().astype(int)
+            total_count = display_df['集計数'].astype(int)
+            pct = (display_df['勝率'] * 100).round(1)
+            display_df['勝率'] = pct.astype(str) + "%(" + plus_count.astype(str) + "/" + total_count.astype(str) + ")"
             display_df['平均差枚数'] = display_df['平均差枚数'].round().astype(int)
-            
+            display_df['稼働日数'] = display_df['稼働日数'].astype(int)
+
+            # 表示列の順序
+            display_df = display_df[['店名', '稼働日数', '総導入台数', '平均差枚数', '勝率']]
+
             event = st.dataframe(
                 display_df,
                 use_container_width=True,
@@ -329,9 +385,11 @@ if cross_menu != "選択しない":
                 clicked_shop = display_df.iloc[event.selection.rows[0]]['店名']
                 st.session_state["go_to_shop"] = clicked_shop
                 st.session_state["force_cross_menu"] = "選択しない"
-                # Force a new data frame to render next time to clear selection
                 st.session_state["df_key_suffix"] = st.session_state.get("df_key_suffix", 0) + 1
                 st.rerun()
+
+            st.caption("💡 店名、総導入台数などのヘッダーに触れると並び替えができます")
+            st.caption("※ 総導入台数はデータ期間内にこの機種が設置されたユニークな台番数です（現在の設置台数とは異なる場合があります）")
         else:
             st.warning("横断分析データがまだ準備中です。数分後に再度お試しください。")
             
@@ -375,6 +433,7 @@ if menu == "1. 全体サマリー＆特定日分析":
                      color='Avg_Samaisu', color_continuous_scale='RdBu',
                      template='plotly_white',
                      labels={'Avg_Samaisu': '平均差枚数', 'End_Digit': '日付の末尾'})
+        fig.update_traces(hovertemplate="%{x}<br>平均差枚数: %{y:.0f}枚<extra></extra>")
         st.plotly_chart(fig, use_container_width=True)
         
     with col2:
@@ -405,7 +464,7 @@ if menu == "1. 全体サマリー＆特定日分析":
     filtered_stats.columns = ['機種名', 'サンプル数', '平均差枚数', '勝率']
     
     st.write(f"毎月 **{target_day}日** の優良機種トップ15 (サンプル数{min_count}以上)")
-    st.dataframe(filtered_stats, use_container_width=True)
+    st.dataframe(filtered_stats, use_container_width=True, hide_index=True)
 
 
 # --- 2. カレンダー・曜日分析 ---
@@ -422,6 +481,7 @@ elif menu == "2. カレンダー・曜日分析":
                       title="曜日別の平均差枚数",
                       color='Avg_Samaisu', color_continuous_scale='RdBu',
                       template='plotly_white')
+        fig1.update_traces(hovertemplate="%{x}<br>平均差枚数: %{y:.0f}枚<extra></extra>")
         st.plotly_chart(fig1, use_container_width=True)
     with col2:
         fig2 = px.line(weekday_stats, x='Weekday', y='Win_Rate',
@@ -448,7 +508,7 @@ elif menu == "2. カレンダー・曜日分析":
     w_filtered_stats.columns = ['機種名', 'サンプル数', '平均差枚数', '勝率']
     
     st.write(f"**{target_weekday}** の優良機種トップ15 (サンプル数{min_count_w}以上)")
-    st.dataframe(w_filtered_stats, use_container_width=True)
+    st.dataframe(w_filtered_stats, use_container_width=True, hide_index=True)
 
 
 # --- 3. 機種別詳細分析 ---
@@ -494,6 +554,7 @@ elif menu == "3. 機種別詳細分析":
         e_stats['End_Digit'] = e_stats['End_Digit'].astype(str) + "の付く日"
         fig_e = px.bar(e_stats, x='End_Digit', y='差枚', color='差枚',
                        color_continuous_scale='RdBu', template='plotly_white')
+        fig_e.update_traces(hovertemplate="%{x}<br>平均差枚数: %{y:.0f}枚<extra></extra>")
         st.plotly_chart(fig_e, use_container_width=True)
 
     with col2:
@@ -501,6 +562,7 @@ elif menu == "3. 機種別詳細分析":
         w_stats = m_df.groupby('Weekday')['差枚'].mean().reset_index()
         fig_w = px.bar(w_stats, x='Weekday', y='差枚', color='差枚',
                        color_continuous_scale='RdBu', template='plotly_white')
+        fig_w.update_traces(hovertemplate="%{x}<br>平均差枚数: %{y:.0f}枚<extra></extra>")
         st.plotly_chart(fig_w, use_container_width=True)
 
     with col3:
@@ -622,7 +684,7 @@ elif menu == "5. 新台の初日・強弱分析":
                     '平均回転数': '{:,.0f}'
                 }
                 
-                st.table(overall_summary.style.format(overall_style_formats)
+                st.table(overall_summary.reset_index(drop=True).style.format(overall_style_formats)
                                               .applymap(color_negative_red, subset=['総差枚', '平均差枚数'])
                                               .set_properties(**{'text-align': 'right'})
                                               .hide(axis="index"))
@@ -670,7 +732,7 @@ elif menu == "5. 新台の初日・強弱分析":
                         })
                         
                 tier_summary_df = pd.DataFrame(tier_results)
-                st.table(tier_summary_df.style.format(overall_style_formats)
+                st.table(tier_summary_df.reset_index(drop=True).style.format(overall_style_formats)
                                               .applymap(color_negative_red, subset=['総差枚', '平均差枚数'])
                                               .set_properties(subset=['総集計台数', '平均回転数', '総差枚', '平均差枚数', '勝率'], **{'text-align': 'right'})
                                               .hide(axis="index"))
@@ -715,9 +777,9 @@ elif menu == "5. 新台の初日・強弱分析":
                     date_df = res_df[res_df['導入/初稼働日'] == date][display_cols].copy()
                     
                     # スタイルとフォーマットを適用（CSSで右寄せ指定）
-                    styled_df = date_df.style.format(style_formats) \
+                    styled_df = date_df.reset_index(drop=True).style.format(style_formats) \
                                        .applymap(color_negative_red, subset=['平均差枚数']) \
-                                       .set_properties(subset=['台数', '平均差枚数', '平均回転数', '平均BB', '平均RB', '平均ART', '勝率'], 
+                                       .set_properties(subset=['台数', '平均差枚数', '平均回転数', '平均BB', '平均RB', '平均ART', '勝率'],
                                                        **{'text-align': 'right'}) \
                                        .hide(axis="index")
                     
@@ -964,7 +1026,7 @@ elif menu == "4. 強力なクロス分析 (曜日×特定日)":
         c_filtered_stats['Win_Rate'] = (c_filtered_stats['Win_Rate'] * 100).round(1).astype(str) + "%"
         c_filtered_stats['Avg_Samaisu'] = c_filtered_stats['Avg_Samaisu'].round().astype(int)
         c_filtered_stats.columns = ['機種名', 'サンプル数', '平均差枚数', '勝率']
-        st.dataframe(c_filtered_stats, use_container_width=True)
+        st.dataframe(c_filtered_stats, use_container_width=True, hide_index=True)
 
 
 # 検索エンジンを回避するタグ（headに埋め込み）

@@ -659,6 +659,8 @@ elif menu == "5. 新台の初日・強弱分析":
                 st.warning("この店舗に新台と判定できるデータがありませんでした。")
             else:
                 results = []
+                machine_unit_counts = {}
+                machine_first_day_frames = {}
                 for machine in new_machines:
                     m_df = df[df['機種名'] == machine].sort_values('日付')
                     # G数が0より大きいレコード（実際に稼働した日）
@@ -667,6 +669,17 @@ elif menu == "5. 新台の初日・強弱分析":
                     if len(active_m_df) > 0:
                         first_active_date = active_m_df['日付'].iloc[0]
                         target_df = m_df[m_df['日付'] == first_active_date]
+                        
+                        if '台番' in m_df.columns:
+                            machine_unit_count = m_df.groupby('日付')['台番'].nunique(dropna=True).max()
+                        else:
+                            machine_unit_count = len(target_df)
+                        if pd.isna(machine_unit_count) or machine_unit_count == 0:
+                            machine_unit_count = len(target_df)
+                        machine_unit_count = int(machine_unit_count)
+                        
+                        machine_unit_counts[machine] = machine_unit_count
+                        machine_first_day_frames[machine] = target_df.copy()
                         
                         avg_g = target_df['G数'].mean()
                         avg_bb = target_df['BB'].mean() if 'BB' in target_df.columns else 0
@@ -678,7 +691,7 @@ elif menu == "5. 新台の初日・強弱分析":
                         results.append({
                             '機種名': machine,
                             '導入/初稼働日': first_active_date.strftime('%Y-%m-%d'),
-                            '台数': len(target_df),
+                            '台数': machine_unit_count,
                             '平均回転数': int(round(avg_g)),    # 小数点なし
                             '平均BB': round(avg_bb, 1),
                             '平均RB': round(avg_rb, 1),
@@ -726,11 +739,10 @@ elif menu == "5. 新台の初日・強弱分析":
                 # 今回は簡略化のため元データdfから直接新台の全件を再抽出して勝率を出す
                 all_new_active_records = []
                 for machine in new_machines:
-                    m_df = df[df['機種名'] == machine].sort_values('日付')
-                    active_m_df = m_df[m_df['G数'] > 0]
-                    if len(active_m_df) > 0:
-                        first_active_date = active_m_df['日付'].iloc[0]
-                        all_new_active_records.append(m_df[m_df['日付'] == first_active_date])
+                    if machine in machine_first_day_frames:
+                        target_df = machine_first_day_frames[machine].copy()
+                        target_df['導入台数'] = machine_unit_counts.get(machine, len(target_df))
+                        all_new_active_records.append(target_df)
                 
                 if all_new_active_records:
                     all_new_df = pd.concat(all_new_active_records)
@@ -767,7 +779,9 @@ elif menu == "5. 新台の初日・強弱分析":
                     elif 10 <= count <= 19: return "10-19台機種"
                     else: return "20台以上機種"
                 
-                all_new_df['Tier'] = all_new_df.groupby('機種名')['台番'].transform('count').apply(get_tier)
+                all_new_df['Tier'] = all_new_df['機種名'].map(
+                    lambda machine: get_tier(machine_unit_counts.get(machine, 1))
+                )
                 
                 tier_order = ["1台機種", "2-4台機種", "5-9台機種", "10-19台機種", "20台以上機種"]
                 tier_results = []
